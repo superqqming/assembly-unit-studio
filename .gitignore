@@ -1,0 +1,7 @@
+# 只發佈建置產物本身，其他東西（.DS_Store、備份檔、意外放進來的檔案）一律不上傳
+*
+!.gitignore
+!index.html
+!apply-key.html
+!version.json
+!README.md
