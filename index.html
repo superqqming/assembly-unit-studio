@@ -3383,7 +3383,7 @@ function faceSketchSVG(stock, f) {
   } catch {
     return null;
   }
-  const W2 = 118, padL = 22, padR = 8, padT = 12, padB = 14, k = (W2 - padL - padR) / Math.max(F.U, F.V);
+  const W2 = 118, padL = 28, padR = 8, padT = 14, padB = 22, k = (W2 - padL - padR) / Math.max(F.U, F.V);
   const Hh = F.V * k + padT + padB;
   const X = (u) => padL + u * k, Y = (v) => Hh - padB - v * k;
   const copies = faceCopies(F, f.mirror);
@@ -3413,12 +3413,15 @@ function faceSketchSVG(stock, f) {
       }
     }
   });
-  el.push(`<path d="M${X(0)} ${Y(0)}h${Math.min(26, F.U * k)}M${X(0)} ${Y(0)}v${-Math.min(26, F.V * k)}" stroke="#2f6fd6" stroke-width="1.2" fill="none"/>`);
-  el.push(`<text x="${X(0) + Math.min(26, F.U * k) + 2}" y="${Y(0) + 3}" font-size="9" fill="#2f6fd6">u</text>`);
-  el.push(`<text x="${X(0) - 3}" y="${Y(0) - Math.min(26, F.V * k) - 2}" font-size="9" fill="#2f6fd6" text-anchor="middle">v</text>`);
-  el.push(`<text x="${X(0) - 3}" y="${Y(0) + 9}" font-size="8" fill="#8a939d" text-anchor="end">0</text>`);
-  el.push(`<text x="${X(F.U)}" y="${Y(0) + 9}" font-size="8" fill="#8a939d" text-anchor="middle">${+F.U}</text>`);
-  el.push(`<text x="${X(0) - 3}" y="${Y(F.V) + 3}" font-size="8" fill="#8a939d" text-anchor="end">${+F.V}</text>`);
+  const Lu = Math.min(26, F.U * k), Lv = Math.min(26, F.V * k);
+  const ax = X(0) - 6, ay = Y(0) + 6;
+  el.push(`<path d="M${ax} ${ay}H${X(0) + Lu}M${ax} ${ay}V${Y(0) - Lv}" stroke="#2f6fd6" stroke-width="1.2" fill="none"/>`);
+  el.push(`<path d="M${X(0) + Lu + 4} ${ay}l-4.5 -2.6v5.2zM${ax} ${Y(0) - Lv - 4}l-2.6 4.5h5.2z" fill="#2f6fd6"/>`);
+  el.push(`<text x="${X(0) + Lu + 6}" y="${ay + 3}" font-size="9" fill="#2f6fd6">u</text>`);
+  el.push(`<text x="${ax}" y="${Y(0) - Lv - 6}" font-size="9" fill="#2f6fd6" text-anchor="middle">v</text>`);
+  el.push(`<text x="${ax - 2}" y="${ay + 3}" font-size="8" fill="#8a939d" text-anchor="end">0</text>`);
+  el.push(`<text x="${X(F.U)}" y="${ay + 13}" font-size="8" fill="#8a939d" text-anchor="middle">${+F.U}</text>`);
+  el.push(`<text x="${ax - 4}" y="${Y(F.V) + 3}" font-size="8" fill="#8a939d" text-anchor="end">${+F.V}</text>`);
   const opp = copies.some((c) => c.opposite);
   return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W2} ${Hh}" font-family="sans-serif">${el.join("")}</svg>`, caption: `${FACE_VIEW[f.face]}${opp ? "（對面也有）" : ""}` };
 }
