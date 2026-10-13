@@ -1103,7 +1103,8 @@ function newProject() {
       scale: "auto",
       dims: "auto",
       paginate: "auto",
-      comboSteps: "show"
+      comboSteps: "show",
+      infoPos: "auto"
     },
     envelope: { w: 100, h: 100, d: 100 },
     parts: [newPart(1)],
@@ -2680,13 +2681,86 @@ var HEADER_H = 9;
 var SEC_H = 5.5;
 var MIN_VIEW = 12;
 var CIRC = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫";
+var NO_HEAD = "，。、；：）」』！？…%";
+var NO_TAIL = "（「『";
+var WORD = /^[A-Za-z0-9.×Ø°+\-=/]$/u;
+var SEG = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter("zh", { granularity: "grapheme" }) : null;
+var graphemes = (str2) => SEG ? [...SEG.segment(str2)].map((x) => x.segment) : Array.from(str2);
+function tokens(str2) {
+  const out = [];
+  for (const g of graphemes(String(str2))) {
+    const last = out[out.length - 1], kind = WORD.test(g) ? "w" : /^\s$/u.test(g) ? "s" : "c";
+    if (last && kind !== "c" && last.kind === kind) last.t += g;
+    else out.push({ t: g, kind });
+  }
+  for (let i = 0; i + 2 < out.length; i++) {
+    if (/^\d+(\.\d+)?$/.test(out[i].t) && out[i + 1].kind === "s" && /^(mm|cm)$/.test(out[i + 2].t)) {
+      out[i].t += " " + out[i + 2].t;
+      out.splice(i + 1, 2);
+    }
+  }
+  return out.map((x) => x.t);
+}
+var isBlank = (t) => /^\s+$/u.test(t);
+function breakGreedy(str2, size, maxW, comma = true) {
+  const lines = [];
+  let cur = [];
+  for (const t of tokens(str2)) {
+    const blank = isBlank(t);
+    if (!cur.length && blank) continue;
+    if (cur.length && textW(cur.join("") + t, size) > maxW) {
+      let carry = [];
+      if (NO_HEAD.includes(t[0]) && cur.length > 1) carry = [cur.pop()];
+      else if (cur.length > 1 && NO_TAIL.includes(cur[cur.length - 1])) carry = [cur.pop()];
+      const cut2 = cur.findLastIndex((x) => "，、；。".includes(x));
+      if (comma && !carry.length && cut2 >= 0 && cut2 < cur.length - 1 && textW(cur.slice(0, cut2 + 1).join(""), size) >= maxW * 0.4 && textW(cur.slice(cut2 + 1).join("").trimStart() + t, size) <= maxW) carry = cur.splice(cut2 + 1);
+      lines.push(cur.join("").trimEnd());
+      cur = carry.filter((x, i) => i || !isBlank(x));
+      if (blank && !cur.length) continue;
+    }
+    cur.push(t);
+  }
+  if (cur.length) lines.push(cur.join("").trimEnd());
+  return lines.filter(Boolean);
+}
+var fitsAll = (lines, size, maxW) => lines.every((l) => textW(l, size) <= maxW + 1e-6 || tokens(l).length === 1);
+function breakLines(str2, size, maxW) {
+  const comma = breakGreedy(str2, size, maxW, true).length <= breakGreedy(str2, size, maxW, false).length;
+  const greedy = (w) => breakGreedy(str2, size, w, comma);
+  const lines = greedy(maxW);
+  if (lines.length < 2) return lines;
+  let lo = maxW * 0.4, hi = maxW, best = lines;
+  for (let i = 0; i < 10; i++) {
+    const mid = (lo + hi) / 2, L = greedy(mid);
+    if (L.length <= lines.length && fitsAll(L, size, maxW)) {
+      hi = mid;
+      best = L;
+    } else lo = mid;
+  }
+  return best;
+}
+function fitLines(str2, size, maxW, maxLines) {
+  const small = size * 0.88, text2 = String(str2);
+  if (textW(text2, size) <= maxW) return { lines: [text2], size };
+  if (textW(text2, small) <= maxW) return { lines: [text2], size: maxW / textW(text2, 1) };
+  for (const sz of [size, small]) {
+    const lines2 = breakLines(text2, sz, maxW);
+    if (lines2.length <= maxLines) return { lines: lines2, size: sz };
+  }
+  const lines = breakGreedy(text2, small, maxW).slice(0, maxLines);
+  const segs2 = graphemes(lines[maxLines - 1] || "");
+  while (segs2.length && textW(segs2.join("") + "…", small) > maxW) segs2.pop();
+  lines[maxLines - 1] = segs2.join("").trimEnd() + "…";
+  return { lines, size: small };
+}
 function buildSheet(model, o = {}) {
   const P = model.project, set = P.settings;
   const paper = PAPERS[set.paper] || PAPERS.A4P;
   const ctx = makeContext(model, o);
   const fixed = set.scale && set.scale !== "auto" ? set.scale.split(":").map(Number) : null;
   const tries = fixed ? [fixed] : ORTHO_SCALES;
-  const results = tries.map((sc) => ({ sc, plan: planPages(ctx, paper, sc[0] / sc[1]) }));
+  const forced = ["bottom", "side"].includes(o.infoMode) ? o.infoMode : ["bottom", "side"].includes(set.infoPos) ? set.infoPos : null;
+  const results = tries.map((sc) => ({ sc, plan: forced ? planPages(ctx, paper, sc[0] / sc[1], forced) : bestPlan(ctx, paper, sc[0] / sc[1]) }));
   let pick;
   if (fixed) pick = results[0];
   else {
@@ -2713,7 +2787,7 @@ function buildSheet(model, o = {}) {
   const warnings = [...pick.plan.warnings];
   if (pick.plan.overflow) warnings.push("內容超出圖紙，請改用較大的圖紙或分頁");
   const tried = results.map((r) => ({ scale: `${r.sc[0]}:${r.sc[1]}`, pages: r.plan.pages.length, overflow: r.plan.overflow, heights: r.plan.heights, partW: r.plan.partW, cw: r.plan.cw, avail: r.plan.avail }));
-  return { pages, scale: scaleLabel, s, warnings: [...new Set(warnings)], tried };
+  return { pages, scale: scaleLabel, s, infoMode: pick.plan.mode, infoFallback: !forced && pick.plan.mode === "side", warnings: [...new Set(warnings)], tried };
 }
 function makeContext(model, o) {
   const P = model.project, pal = model.palette;
@@ -2727,6 +2801,7 @@ function makeContext(model, o) {
     primary,
     shade: o.shade !== false,
     warnings: [],
+    pre: /* @__PURE__ */ new Map(),
     proj: P.settings.projection === "first" ? "first" : "third",
     stageScene: (p, i) => memo(`st:${p.part.id}:${i}`, () => scene([{ mesh: p.stages[i].mesh, color: p.color, acc: i ? /* @__PURE__ */ new Set([p.stages[i].toolId]) : null }], pal.cut)),
     partScene: (p) => memo(`fin:${p.part.id}`, () => scene([{ mesh: p.finalMesh, color: p.color }], pal.cut)),
@@ -2734,18 +2809,30 @@ function makeContext(model, o) {
     partOf: (id) => model.parts.find((p) => p.part.id === id)
   };
 }
-function planPages(ctx, paper, s) {
-  const W2 = [];
-  ctx.warnings = W2;
+function bestPlan(ctx, paper, s) {
+  const bottom = planPages(ctx, paper, s, "bottom");
+  const side = planPages(ctx, paper, s, "side");
+  return !bottom.overflow && (side.overflow || bottom.pages.length <= side.pages.length) ? bottom : side;
+}
+function planPages(ctx, paper, s, mode = "bottom") {
   const cw = paper.w - 2 * MARGIN;
+  let pre = ctx.pre.get(s);
+  if (!pre) {
+    ctx.warnings = [];
+    pre = { pbs: ctx.model.parts.map((p) => partBlock(ctx, p, s)), combos: combosBlock(ctx, cw, s) };
+    pre.W = ctx.warnings;
+    ctx.pre.set(s, pre);
+  }
+  const W2 = [...pre.W];
+  ctx.warnings = W2;
   const blocks = [];
-  const pbs = ctx.model.parts.map((p) => partBlock(ctx, p, s));
+  const pbs = pre.pbs;
   const cellW = Math.max(...pbs.map((b) => b.wMin), 1);
   const cols = Math.max(1, Math.min(pbs.length, Math.floor((cw + 0.01) / cellW)));
   const colW = cw / cols;
   for (let r = 0; r < Math.ceil(pbs.length / cols); r++) {
     const row = pbs.slice(r * cols, r * cols + cols);
-    const h2 = Math.max(...row.map((b) => b.h));
+    const h2 = Math.max(...row.map((b) => b.hAt(colW)));
     blocks.push({ h: h2, block: { draw: (D, x, y2, w, hh, o) => row.forEach((b, i) => {
       if (i) D.path([[x + i * colW, y2], [x + i * colW, y2 + hh]], "GRIDL");
       b.draw(D, x + i * colW, y2, colW, hh, o);
@@ -2753,9 +2840,9 @@ function planPages(ctx, paper, s) {
   }
   let tooWide = cellW > cw;
   if (tooWide) ctx.warnings.push("工件區塊比圖紙寬，請改用較大的圖紙或較小的比例");
-  const combos = combosBlock(ctx, cw, s);
+  const combos = pre.combos;
   if (combos) blocks.push(combos);
-  const grp = assemblyBlock(ctx, cw, s);
+  const grp = assemblyBlock(ctx, cw, s, mode);
   if (grp) {
     blocks.push(grp);
     if (grp.tooWide) {
@@ -2775,15 +2862,16 @@ function planPages(ctx, paper, s) {
   for (const b of blocks) {
     if (y + b.h > bottom && cur.items.length) newPage();
     if (y + b.h > bottom) overflow = true;
-    cur.items.push({ block: b.block, x: MARGIN, y, w: cw, h: b.h, rule: b.rule, grow: b.grow });
+    cur.items.push({ block: b.block, x: MARGIN, y, w: cw, h: b.h, rule: b.rule, grow: b.grow, fill: b.fill });
     y += b.h;
   }
   const last = pages[pages.length - 1], free = bottom - y;
   const gi = last.items.findIndex((it) => it.grow);
   if (gi >= 0 && free > 6) {
-    const add3 = Math.max(0, Math.min(free - 2, last.items[gi].grow()));
+    const it = last.items[gi], fill = it.fill && gi === last.items.length - 1;
+    const add3 = Math.max(0, fill ? free - 2 : Math.min(free - 2, it.grow()));
     last.items[gi].h += add3;
-    for (const it of last.items.slice(gi + 1)) it.y += add3;
+    for (const it2 of last.items.slice(gi + 1)) it2.y += add3;
   }
   for (const pg of pages) pg.items.forEach((it, i) => {
     if (i) {
@@ -2795,7 +2883,7 @@ function planPages(ctx, paper, s) {
     }
   });
   if (tooWide) overflow = true;
-  return { pages, overflow, warnings: W2, heights: blocks.map((b) => Math.round(b.h * 10) / 10), partW: pbs.map((b) => Math.round(b.w * 10) / 10), cw, avail: Math.round((bottom - MARGIN - HEADER_H) * 10) / 10 };
+  return { mode, pages, overflow, warnings: W2, heights: blocks.map((b) => Math.round(b.h * 10) / 10), partW: pbs.map((b) => Math.round(b.w * 10) / 10), cw, avail: Math.round((bottom - MARGIN - HEADER_H) * 10) / 10 };
 }
 function drawHeader(D, ctx, paper) {
   const P = ctx.P, env = P.envelope, parts = ctx.model.parts;
@@ -2856,11 +2944,18 @@ function partBlock(ctx, p, s) {
   const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
   const notes = n % cols !== 0 ? mateNotes(ctx, p) : [];
   const rows = Math.ceil(n / cols);
-  const slotNat = Math.max(fw + 2.4, 18), slotMin = Math.max(fw + 1, 16), labH = 6.4, gapV = 3.2;
-  const slotH = fh + labH + gapV;
-  const gridH = rows * slotH;
-  const tv = new Drawing();
+  const slotNat = Math.max(fw + 2.4, 18), slotMin = Math.max(fw + 1, 16), gapV = 3.2;
   const s0 = p.part.stock;
+  const LAB = st.map((stage, i) => ({ l1: i ? `${CIRC[i - 1] || i} ${stage.label}` : "料塊", l2: i ? stage.note : `${s0.w}×${s0.d}×${s0.h}` }));
+  const labFit = (w2) => LAB.map((L) => ({ a: fitLines(L.l1, 2.1, w2, 2), b: L.l2 ? fitLines(L.l2, 1.9, w2 - 1.2, 3) : null }));
+  const needW = Math.max(0, ...LAB.map((L) => Math.max(textW(L.l1, 2.1), L.l2 ? textW(L.l2, 1.9) / 2 * 1.1 : 0) + 0.6));
+  const slotWant = Math.max(slotNat, Math.min(34, needW));
+  const L1H = 2.5, L2H = 2.3;
+  const labHOf = (labs) => {
+    const n1 = Math.max(1, ...labs.map((L) => L.a.lines.length)), n2 = Math.max(0, ...labs.map((L) => L.b ? L.b.lines.length : 0));
+    return 2.7 + (n1 - 1) * L1H + (n2 ? 2.7 + (n2 - 1) * L2H : 0) + 1;
+  };
+  const tv = new Drawing();
   const broken = !p.finalMesh.tris.length;
   if (broken) {
     tv.text(0, 0, "這個工件加工後沒有剩下材料，", 2.4, { cls: "m" });
@@ -2875,8 +2970,14 @@ function partBlock(ctx, p, s) {
   const PADL = 1.5, GAP = 2, PADR = 1.5, GAPMIN = 1, PADRMIN = 0.4;
   const headEnd = 4 + textW(p.part.name, 3.1) + textW("① 加工流程", 2.1);
   const headMin = headEnd + 3 + textW("② 三視圖（1:20）", 2.1) + 1;
-  const w = Math.max(headMin, PADL + cols * slotNat + GAP + tb.w + PADR), h2 = SEC_H + Math.max(gridH, tb.h) + 2.5;
   const wMin = Math.max(headMin, PADL + cols * slotMin + GAPMIN + tb.w + PADRMIN);
+  const slotFor = (cellW) => Math.max(slotMin, Math.min(slotWant, (cellW - PADL - GAPMIN - tb.w - PADRMIN) / cols));
+  const layoutAt = (cellW) => {
+    const slotW = slotFor(cellW), labs = labFit(slotW - 0.4), labH = labHOf(labs);
+    return { slotW, labs, labH, slotH: fh + labH + gapV };
+  };
+  const hAt = (cellW) => SEC_H + Math.max(rows * layoutAt(cellW).slotH, tb.h) + 2.5;
+  const w = Math.max(headMin, PADL + cols * slotNat + GAP + tb.w + PADR), h2 = hAt(w);
   const pos = (i) => {
     const r = Math.floor(i / cols), c = r % 2 === 0 ? i % cols : cols - 1 - i % cols;
     return { r, c };
@@ -2885,9 +2986,9 @@ function partBlock(ctx, p, s) {
     w,
     wMin,
     h: h2,
+    hAt,
     draw(D, x, y, cellW, cellH, o) {
-      const room = cellW - PADL - GAPMIN - tb.w - PADRMIN;
-      const slotW = Math.max(slotMin, Math.min(slotNat, room / cols));
+      const { slotW, labs, labH, slotH } = layoutAt(cellW);
       const gridW = cols * slotW;
       const free = cellW - PADL - gridW - tb.w;
       const lead = Math.max(GAPMIN, Math.min(free - PADRMIN, GAP + Math.max(0, (free - GAP - PADR) / 2)));
@@ -2905,10 +3006,12 @@ function partBlock(ctx, p, s) {
         const [sx, sy] = at2(i);
         const f = isoFig(D, figs[i].sc, { x: sx + (slotW - fw) / 2, y: sy, w: fw, h: fh }, k, { valign: "bottom", ppm: 18, shade: ctx.shade, hatchCut: ctx.pal.hatchCut });
         figBox.push({ x0: f.x0, x1: f.x0 + f.W, y0: f.y0, y1: f.y0 + f.H, sx, sy });
-        const l1 = i ? `${CIRC[i - 1] || i} ${stage.label}` : "料塊";
-        const l2 = i ? stage.note : `${s0.w}×${s0.d}×${s0.h}`;
-        D.text(sx + slotW / 2, sy + fh + 2.7, l1, 2.1, { a: "middle", w: 600, maxW: slotW - 0.4 });
-        if (l2) D.text(sx + slotW / 2, sy + fh + 5.4, l2, 1.9, { a: "middle", cls: "m", maxW: slotW - 0.4 });
+        const { a, b } = labs[i], cxm = sx + slotW / 2;
+        a.lines.forEach((ln, j) => D.text(cxm, sy + fh + 2.7 + j * L1H, ln, a.size, { a: "middle", w: 600, maxW: slotW - 0.4 }));
+        if (b) {
+          const y2 = sy + fh + 2.7 + (a.lines.length - 1) * L1H + 2.7;
+          b.lines.forEach((ln, j) => D.text(cxm, y2 + j * L2H, ln, b.size, { a: "middle", cls: "m", maxW: slotW - 1.6 }));
+        }
       });
       for (let i = 0; i + 1 < n; i++) {
         const a = pos(i), b = pos(i + 1), A = figBox[i], B = figBox[i + 1];
@@ -2967,13 +3070,17 @@ function combosBlock(ctx, cw, s) {
   });
   const thumbs = [...items, ...variants.map((C) => ({ ids: [...C.solved.placed.keys()], src: C, note: C.asm.name || "", group: C.asm.group || "" }))];
   const scenes = thumbs.map((t) => ctx.asmScene(t.src.asm.id + ":" + t.ids.join(","), t.ids.map((id) => ({ p: ctx.partOf(id), ...t.src.solved.placed.get(id) })).filter((e) => e.p)));
-  const tw = Math.max(19, Math.min(30, (cw - 12) / Math.min(thumbs.length, 9)));
-  const perRow = Math.max(1, Math.floor((cw - 12) / tw));
+  const avail = cw - 8;
+  const tw = Math.max(19, Math.min(30, avail / Math.min(thumbs.length, 9)));
+  const perRow = Math.max(1, Math.floor(avail / tw));
+  const rowsN = Math.ceil(thumbs.length / perRow), cols = Math.ceil(thumbs.length / rowsN);
+  const colW = avail / cols;
   const FIG = Math.min(26, tw * 0.95), FIG_TALL = 44;
   let k = Math.min(...scenes.map((sc) => fitK(sc, tw - 1.4, FIG)));
   const kTall = Math.min(...scenes.map((sc) => fitK(sc, tw - 1.4, FIG_TALL)));
   if (kTall > k * 1.15) k = kTall;
   const figH = Math.max(FIG * 0.6, ...scenes.map((sc) => isoSize(sc, k).h)) + 0.3;
+  k = Math.max(k, Math.min(...scenes.map((sc) => fitK(sc, Math.min(colW, tw * 1.5) - 1.4, figH - 0.3))));
   const rows = Math.ceil(thumbs.length / perRow), rowH = figH + 7;
   const h2 = SEC_H + 1 + rows * rowH + 1;
   return {
@@ -2982,13 +3089,13 @@ function combosBlock(ctx, cw, s) {
       D.text(x + 2.5, y + 4.5, "③ 可以產生的組合", 3.1, { w: 700 });
       D.text(x + 38, y + 4.3, "（主要組合的各組配合、逐步組裝；另含自訂的組合與變化）", 2.1, { cls: "m" });
       thumbs.forEach((t, i) => {
-        const r = Math.floor(i / perRow), c = i % perRow;
-        const tx = x + 12 + c * tw, ty = y + SEC_H + 1 + r * rowH;
+        const r = Math.floor(i / cols), c = i % cols;
+        const tx = x + 4 + c * colW, ty = y + SEC_H + 1 + r * rowH;
         if (c) D.path([[tx, ty + 0.5], [tx, ty + rowH - 1]], "GRIDL");
-        isoFig(D, scenes[i], { x: tx + 0.7, y: ty, w: tw - 1.4, h: figH }, k, { valign: "bottom", layer: "ISO2", ppm: 16, shade: ctx.shade });
+        isoFig(D, scenes[i], { x: tx + 0.7, y: ty, w: colW - 1.4, h: figH }, k, { valign: "bottom", layer: "ISO2", ppm: 16, shade: ctx.shade });
         const nums = t.ids.map((id) => (ctx.partOf(id) || {}).no).join("＋");
-        D.text(tx + tw / 2, ty + figH + 3, (t.group ? t.group + "　" : "") + nums, 2.1, { a: "middle", w: 700, maxW: tw - 1 });
-        if (t.note) D.text(tx + tw / 2, ty + figH + 5.7, t.note, 1.9, { a: "middle", cls: "m", maxW: tw - 1 });
+        D.text(tx + colW / 2, ty + figH + 3, (t.group ? t.group + "　" : "") + nums, 2.1, { a: "middle", w: 700, maxW: colW - 1 });
+        if (t.note) D.text(tx + colW / 2, ty + figH + 5.7, t.note, 1.9, { a: "middle", cls: "m", maxW: colW - 1 });
       });
     } }
   };
@@ -3000,14 +3107,13 @@ var mateShort = (m) => {
   const plug = /Plug$/.test(m.pB.kind) ? m.pB : m.pA, sock = plug === m.pB ? m.pA : m.pB;
   return `${PORT_KIND_NAMES[plug.kind]}→${short(sock).replace(" ", "")}`;
 };
-function assemblyBlock(ctx, cw, s) {
+function assemblyBlock(ctx, cw, s, mode = "bottom") {
   const A = ctx.primary;
-  const parts = ctx.model.parts;
   const placedIds = A ? [...A.solved.placed.keys()].filter((id) => ctx.partOf(id)) : [];
   const entries = placedIds.map((id) => ({ p: ctx.partOf(id), ...A.solved.placed.get(id) })).filter((e) => e.p.finalMesh.tris.length);
-  const listW = 54;
+  const has = entries.length >= 2;
   let tv = null, tb = null, G = null, asmSc = null;
-  if (entries.length >= 2) {
+  if (has) {
     asmSc = ctx.asmScene(A.asm.id + ":all", entries);
     const bb = meshBounds(entries);
     tv = new Drawing();
@@ -3017,59 +3123,107 @@ function assemblyBlock(ctx, cw, s) {
     if (ctx.P.settings.dims !== "off") placeDims(tv, G, { lin: overallRequests(bb, ctx.proj), lead: [] });
     tb = bounds(tv);
   }
-  const listH = partsListHeight(ctx, A, listW);
   const t5 = "⑤ 組合後的單元三視圖", asmW = tb ? Math.max(tb.w, textW(t5, 3.1) + 2) : 0;
-  const EX_MIN = 40;
-  const stacked = !!tb && EX_MIN + asmW + listW + 10 > cw;
+  const side = mode === "side", EX_MIN = 40, listW = 54;
   const tooWide = !!tb && asmW > cw - 4;
-  const exW = !tb ? cw - listW - 6 : stacked ? cw - listW - 8 : Math.max(EX_MIN, cw - asmW - listW - 10);
+  const colW = side ? listW + 4 : 0;
+  const stacked = !!tb && EX_MIN + asmW + 6 + colW > cw;
+  const exW = !side ? !tb || stacked ? cw - 4 : Math.max(EX_MIN, cw - asmW - 6) : !tb ? cw - listW - 6 : stacked ? cw - listW - 8 : Math.max(EX_MIN, cw - asmW - listW - 10);
+  const info = side ? null : infoRow(ctx, A, cw);
+  const colH = side ? partsColumnHeight(ctx, A, listW) : 0;
+  const row1 = !has ? Math.max(SEC_H + 10, colH) : stacked ? Math.max(colH, SEC_H + 1 + 55) : Math.max(SEC_H + 1 + tb.h + 2, SEC_H + 1 + 50, colH);
   const row2H = stacked ? SEC_H + 2 + tb.h + 3 : 0;
-  const row1 = stacked ? Math.max(listH, SEC_H + 1 + 55) : Math.max(SEC_H + 1 + (tb ? tb.h + 2 : 0), listH, SEC_H + 1 + (entries.length >= 2 ? 50 : 0));
-  const h2 = row1 + 2 + row2H;
+  const h2 = row1 + 2 + row2H + (info ? info.h : 0);
   let exp = null;
-  if (entries.length >= 2) {
+  if (has) {
     const ex = entries.map((e) => ({ ...e, t: add2(e.t, A.offsets.get(e.p.part.id) || [0, 0, 0]) }));
     exp = { ex, sc: ctx.asmScene(A.asm.id + ":exploded", ex) };
   }
-  const grow = exp ? () => {
+  const grow = () => {
+    if (!exp) return 0;
     const sz = isoSize(exp.sc, 1), boxW = exW - 2 - 12;
     const need = boxW * sz.h / sz.w + 6 + SEC_H + 3;
     return Math.min(60, Math.max(0, need - (row1 + 2)));
-  } : null;
+  };
   return {
     h: h2,
     grow,
+    fill: !side,
     tooWide,
     block: { draw(D, x, y, w, hh) {
-      if (entries.length >= 2) {
-        const r1 = hh - row2H;
+      const r1 = row1 + 2 + Math.min(Math.max(0, hh - h2), grow());
+      if (side && has) D.path([[x + w - listW - 4, y + 1], [x + w - listW - 4, y + (stacked ? r1 : hh) - 1]], "GRIDL");
+      if (has) {
         D.text(x + 2.5, y + 4.5, "④ 組合爆炸圖", 3.1, { w: 700 });
         drawExploded(D, ctx, A, exp, { x: x + 3, y: y + SEC_H + 1, w: exW - 2, h: r1 - SEC_H - 3 });
         let ox, oy;
         if (stacked) {
-          D.path([[x + w - listW - 4, y + 1], [x + w - listW - 4, y + r1 - 1]], "GRIDL");
           D.path([[x, y + r1], [x + w, y + r1]], "GRIDL");
           D.text(x + 2.5, y + r1 + 4.5, t5, 3.1, { w: 700 });
           ox = x + Math.max(2, (w - tb.w) / 2) - tb.x0;
           oy = y + r1 + SEC_H + 2 - tb.y0;
         } else {
           D.text(x + exW + 4, y + 4.5, t5, 3.1, { w: 700 });
-          D.path([[x + exW + 2, y + 1], [x + exW + 2, y + hh - 1]], "GRIDL");
-          D.path([[x + w - listW - 4, y + 1], [x + w - listW - 4, y + hh - 1]], "GRIDL");
+          D.path([[x + exW + 2, y + 1], [x + exW + 2, y + r1 - 1]], "GRIDL");
           ox = x + exW + 4 + (asmW - tb.w) / 2 - tb.x0;
           oy = y + SEC_H + 2 - tb.y0;
         }
         D.merge(tv, ox, oy);
         const S = G.V.S.rect, T = G.V.T.rect;
         const q = { x: S.x0 + ox - 1, y: T.y0 + oy, w: S.x1 - S.x0 + 6, h: T.y1 - T.y0 };
-        q.w = Math.min(q.w, tb.x1 + ox - q.x);
+        q.w = Math.min(q.w, tb.x1 + ox - q.x, x + w - 2 - q.x);
         isoFig(D, asmSc, q, fitK(asmSc, q.w, q.h), { ppm: 16, layer: "ISO2", shade: ctx.shade });
       } else {
         D.text(x + 2.5, y + 4.5, "④⑤ 組合", 3.1, { w: 700 });
         D.text(x + 2.5, y + 12, "尚未設定組合：請到「組合」分頁選擇配合點", 2.4, { cls: "m" });
       }
-      drawPartsList(D, ctx, A, { x: x + w - listW - 2, y, w: listW });
+      if (side) drawPartsColumn(D, ctx, A, { x: x + w - listW - 2, y, w: listW });
+      else info.draw(D, x, y + hh - info.h, w);
     } }
+  };
+}
+function infoRow(ctx, A, cw) {
+  const order = A && A.solved.tree.length ? A.solved.tree.map((e, i) => {
+    const c = ctx.partOf(e.child), pa = ctx.partOf(e.parent);
+    const cp = e.reversed ? e.mate.pA : e.mate.pB, pp = e.reversed ? e.mate.pB : e.mate.pA;
+    return [`${i + 1}. `, `${c.part.name} ${short(cp)} → ${pa.part.name} ${short(pp)}`];
+  }) : [];
+  const env = ctx.P.envelope;
+  const notes = [["1. ", "尺寸單位 mm。"], ["2. ", `最大淨空間 ${env.w}×${env.d}×${env.h}。`], ["3. ", "立體圖不依比例；色塊為該加工步驟新產生的面。"]];
+  const GAP = 5, PAD = 2, nCols = order.length ? 3 : 2;
+  const avail = cw - 2 * PAD - GAP * (nCols - 1);
+  const listW = Math.min(110, Math.max(54, avail * (order.length ? 0.46 : 0.6)));
+  const restW = (avail - listW) / (nCols - 1);
+  const SZ = 1.85, LH = 2.6;
+  const numbered = (items, w) => items.map(([num3, t]) => {
+    const ind = textW(num3, SZ);
+    return { num: num3, ind, ...fitLines(t, SZ, w - ind, 3) };
+  });
+  const ord = numbered(order, restW), nts = numbered(notes, restW);
+  const colH = (L) => SEC_H + 2 + L.reduce((a, f) => a + f.lines.length * LH + 0.7, 0);
+  const h2 = 1 + Math.max(partsListHeight(ctx, listW), order.length ? colH(ord) : 0, colH(nts)) + 1;
+  const drawCol = (D, title, L, x, y) => {
+    D.text(x + 0.5, y + 4.5, title, 3.1, { w: 700 });
+    let yy = y + SEC_H + 3.2;
+    for (const f of L) {
+      f.lines.forEach((ln, j) => D.text(x + (j ? f.ind : 0), yy + j * LH, j ? ln : f.num + ln, f.size, { cls: "m", maxW: restW - (j ? f.ind : 0) }));
+      yy += f.lines.length * LH + 0.7;
+    }
+  };
+  return {
+    h: h2,
+    draw(D, x, y, w) {
+      D.path([[x, y], [x + w, y]], "GRIDL");
+      let cx = x + PAD;
+      drawPartsList(D, ctx, { x: cx, y: y + 1, w: listW });
+      cx += listW + GAP;
+      const cols = order.length ? [["組裝順序", ord], ["註", nts]] : [["註", nts]];
+      for (const [title, L] of cols) {
+        D.path([[cx - GAP / 2, y + 2], [cx - GAP / 2, y + h2 - 1]], "GRIDL");
+        drawCol(D, title, L, cx, y + 1);
+        cx += restW + GAP;
+      }
+    }
   };
 }
 function drawExploded(D, ctx, A, { ex, sc }, box2) {
@@ -3081,7 +3235,8 @@ function drawExploded(D, ctx, A, { ex, sc }, box2) {
     if (!Tp || !Tc) continue;
     const a = add2(apply3(Tp.R, parentPort.o), Tp.t), n = apply3(Tp.R, parentPort.n), b = add2(apply3(Tc.R, childPort.o), Tc.t);
     const span = ctx.model.size;
-    cline(D, f.P3(a.map((v, i) => v - n[i] * span * 0.06)), f.P3(b.map((v, i) => v + n[i] * span * 0.35)));
+    const seg2 = clipSeg(f.P3(a.map((v, i) => v - n[i] * span * 0.06)), f.P3(b.map((v, i) => v + n[i] * span * 0.35)), box2);
+    if (seg2) cline(D, seg2[0], seg2[1]);
   }
   const items = ex.map((e, i) => {
     const bd = f.bodies && f.bodies[i];
@@ -3094,6 +3249,22 @@ function drawExploded(D, ctx, A, { ex, sc }, box2) {
     return { n: e.p.no, target, body: i };
   });
   placeBalloons(D, f.ids, items, box2, { center: [f.x0 + f.W / 2, f.y0 + f.H / 2] });
+}
+function clipSeg(p, q, box2) {
+  const dx = q[0] - p[0], dy = q[1] - p[1];
+  let t0 = 0, t1 = 1;
+  for (const [pp, qq] of [[-dx, p[0] - box2.x], [dx, box2.x + box2.w - p[0]], [-dy, p[1] - box2.y], [dy, box2.y + box2.h - p[1]]]) {
+    if (pp === 0) {
+      if (qq < 0) return null;
+      continue;
+    }
+    const r = qq / pp;
+    if (pp < 0) t0 = Math.max(t0, r);
+    else t1 = Math.min(t1, r);
+    if (t0 > t1) return null;
+  }
+  const a = [p[0] + t0 * dx, p[1] + t0 * dy], b = [p[0] + t1 * dx, p[1] + t1 * dy];
+  return Math.hypot(b[0] - a[0], b[1] - a[1]) < 1 ? null : [a, b];
 }
 var LIST_COLS = (w) => [6.5, w - 6.5 - 14, 14];
 function partsListRows(ctx, w) {
@@ -3108,12 +3279,10 @@ function partsListRows(ctx, w) {
     return { p, lines, size, h: Math.max(5.4, 1.4 + lines.length * 2.1) };
   });
 }
-function partsListHeight(ctx, A, w) {
-  const rows = partsListRows(ctx, w);
-  const nOrder = A && A.solved.tree.length ? A.solved.tree.length : 0;
-  return SEC_H + 2 + 5.4 + rows.reduce((a, r) => a + r.h, 0) + 5 + (nOrder ? 3.3 * (nOrder + 1) + 1.5 : 0) + 4 * 3.3;
+function partsListHeight(ctx, w) {
+  return SEC_H + 2 + 5.4 + partsListRows(ctx, w).reduce((a, r) => a + r.h, 0) + 1;
 }
-function drawPartsList(D, ctx, A, { x, y, w }) {
+function drawPartsList(D, ctx, { x, y, w }) {
   const rows = partsListRows(ctx, w), headH = 5.4, cw = LIST_COLS(w);
   D.text(x + 0.5, y + 4.5, "零件表", 3.1, { w: 700 });
   const ty = y + SEC_H + 2, tw = cw.reduce((a, b) => a + b, 0);
@@ -3133,7 +3302,14 @@ function drawPartsList(D, ctx, A, { x, y, w }) {
     D.text(x + cw[0] + cw[1] + cw[2] / 2, mid + 0.6, `${s.w}×${s.d}×${s.h}`, 1.75, { a: "middle", maxW: cw[2] - 1 });
     yy += h2;
   });
-  yy += 5;
+  return yy;
+}
+function partsColumnHeight(ctx, A, w) {
+  const nOrder = A && A.solved.tree.length ? A.solved.tree.length : 0;
+  return partsListHeight(ctx, w) - 1 + 5 + (nOrder ? 3.3 * (nOrder + 1) + 1.5 : 0) + 4 * 3.3;
+}
+function drawPartsColumn(D, ctx, A, { x, y, w }) {
+  let yy = drawPartsList(D, ctx, { x, y, w }) + 5;
   if (A && A.solved.tree.length) {
     D.text(x, yy, "組裝順序：", 2.1, { w: 700 });
     yy += 3.3;
@@ -4959,6 +5135,10 @@ function renderSettings(panel, app2) {
     seg([["show", "列出主要組合的每一步＋加入的組合"], ["hide", "只列加入的組合"]], S.comboSteps || "show", set((v) => {
       S.comboSteps = v;
     })),
+    h("h3", {}, "零件表、組裝順序、註"),
+    seg([["auto", "放最下面（會多一頁時放右邊）"], ["bottom", "一律放最下面"], ["side", "放右邊一欄"]], S.infoPos || "auto", set((v) => {
+      S.infoPos = v;
+    })),
     h("h3", {}, "尺寸標註"),
     seg([["auto", "自動標主要尺寸"], ["off", "不標（自己標）"]], S.dims, set((v) => {
       S.dims = v;
@@ -5227,9 +5407,9 @@ function friendlyError(mod, err) {
 var rid2 = (p) => p + Math.random().toString(36).slice(2, 8);
 var clone = (o) => JSON.parse(JSON.stringify(o));
 var BAD_KEYS = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
-var tokens = (path) => String(path).match(/[^.[\]]+/g) || [];
+var tokens2 = (path) => String(path).match(/[^.[\]]+/g) || [];
 function setPath(obj2, path, value) {
-  const ts = tokens(path);
+  const ts = tokens2(path);
   if (!ts.length || ts.some((t) => BAD_KEYS.has(t))) return false;
   let o = obj2;
   for (const t of ts.slice(0, -1)) {
@@ -6368,7 +6548,7 @@ async function recompute() {
     refreshPanel();
     const ms = Math.round(performance.now() - t0);
     const paper = PAPERS[project.settings.paper] || PAPERS.A4P;
-    $("sheetInfo").textContent = `${paper.name}・比例 ${sheet.scale}・${sheet.pages.length} 頁`;
+    $("sheetInfo").textContent = `${paper.name}・比例 ${sheet.scale}・${sheet.pages.length} 頁${sheet.infoFallback ? "・零件表放右邊（放最下面會多一頁，可在「設定」改）" : ""}`;
     setStatus(`已更新（${ms} ms）`);
   } catch (err) {
     console.error(err);
