@@ -220,6 +220,10 @@ button.danger { background: var(--danger); border-color: var(--danger); color: #
 /* 打開時載入了這台電腦上次的作品（共用電腦一眼看出不是自己的） */
 .notice { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 8px 10px 0; padding: 8px 10px; border-radius: 6px; background: #eef4ff; color: #1d3b6e; font-size: 12.5px; }
 .notice span { flex: 1 1 260px; }
+/* 被放在協作平台的框裡：請同學改在新分頁開（顏色沿用 v1 登入頁的提示） */
+.notice.embed { border: 1px solid #f3c9c9; background: #fef6f6; color: #7f1d1d; line-height: 1.6; }
+a.go { display: inline-flex; align-items: center; height: 30px; padding: 0 12px; border-radius: 6px; background: var(--danger); color: #fff; font-weight: 600; text-decoration: none; white-space: nowrap; }
+a.go:hover { filter: brightness(1.08); }
 @media (prefers-color-scheme: dark) {
   .ai-dual .aia { color: #1d2330; }
   .ai-dual .aia input, .ai-dual .aia select, .ai-dual .aia button { background: #fff; color: inherit; border-color: #d9dde3; }
@@ -1393,15 +1397,17 @@ function bounds(drawing) {
 }
 var F2 = (v) => (Math.round(v * 100) / 100).toString();
 var esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+var attr = (s) => esc(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 function itemSVG(it) {
-  const cls = LAYERS[it.layer] || "";
+  const own = (k) => Object.hasOwn(it, k) ? it[k] : void 0;
+  const cls = attr(Object.hasOwn(LAYERS, it.layer) ? LAYERS[it.layer] : "");
   if (it.k === "pl") {
     const d = "M" + it.pts.map((p) => F2(p[0]) + " " + F2(p[1])).join("L") + (it.closed ? "Z" : "");
     let at2 = "";
-    if (it.dash) at2 += ` stroke-dasharray="${it.dash}"`;
-    if (it.sw) at2 += ` stroke-width="${it.sw}"`;
-    if (it.fill) at2 += ` style="fill:${it.fill}"`;
-    if (it.stroke) at2 += ` stroke="${it.stroke}"`;
+    if (own("dash")) at2 += ` stroke-dasharray="${attr(it.dash)}"`;
+    if (own("sw")) at2 += ` stroke-width="${attr(it.sw)}"`;
+    if (own("fill")) at2 += ` style="fill:${attr(it.fill)}"`;
+    if (own("stroke")) at2 += ` stroke="${attr(it.stroke)}"`;
     return `<path class="${cls}" d="${d}"${at2}/>`;
   }
   if (it.k === "mp") {
@@ -1410,28 +1416,29 @@ function itemSVG(it) {
   }
   if (it.k === "rect") {
     let at2 = "";
-    if (it.fill) at2 += ` fill="${it.fill}"`;
-    if (it.stroke) at2 += ` stroke="${it.stroke}"`;
-    if (it.sw) at2 += ` stroke-width="${it.sw}"`;
-    if (it.rx) at2 += ` rx="${it.rx}"`;
+    if (own("fill")) at2 += ` fill="${attr(it.fill)}"`;
+    if (own("stroke")) at2 += ` stroke="${attr(it.stroke)}"`;
+    if (own("sw")) at2 += ` stroke-width="${attr(it.sw)}"`;
+    if (own("rx")) at2 += ` rx="${attr(it.rx)}"`;
     return `<rect class="${cls}" x="${F2(it.x)}" y="${F2(it.y)}" width="${F2(it.w)}" height="${F2(it.h)}"${at2}/>`;
   }
   if (it.k === "circle") {
     let at2 = "";
-    if (it.fill) at2 += ` fill="${it.fill}"`;
-    if (it.sw) at2 += ` stroke-width="${it.sw}"`;
+    if (own("fill")) at2 += ` fill="${attr(it.fill)}"`;
+    if (own("sw")) at2 += ` stroke-width="${attr(it.sw)}"`;
     return `<circle class="${cls}" cx="${F2(it.cx)}" cy="${F2(it.cy)}" r="${F2(it.r)}"${at2}/>`;
   }
   if (it.k === "image") {
-    return `<image href="${it.href}" xlink:href="${it.href}" x="${F2(it.x)}" y="${F2(it.y)}" width="${F2(it.w)}" height="${F2(it.h)}" preserveAspectRatio="none"/>`;
+    const href = attr(own("href") ?? "");
+    return `<image href="${href}" xlink:href="${href}" x="${F2(it.x)}" y="${F2(it.y)}" width="${F2(it.w)}" height="${F2(it.h)}" preserveAspectRatio="none"/>`;
   }
   if (it.k === "text") {
     const at2 = [`x="${F2(it.x)}"`, `y="${F2(it.y)}"`, `font-size="${F2(it.size)}"`];
-    if (it.a && it.a !== "start") at2.push(`text-anchor="${it.a}"`);
-    if (it.weight) at2.push(`font-weight="${it.weight}"`);
-    if (it.fill) at2.push(`fill="${it.fill}"`);
-    if (it.rot) at2.push(`transform="rotate(${it.rot} ${F2(it.x)} ${F2(it.y)})"`);
-    return `<text class="t${it.cls ? " " + it.cls : ""}" ${at2.join(" ")}>${esc(it.str)}</text>`;
+    if (own("a") && it.a !== "start") at2.push(`text-anchor="${attr(it.a)}"`);
+    if (own("weight")) at2.push(`font-weight="${attr(it.weight)}"`);
+    if (own("fill")) at2.push(`fill="${attr(it.fill)}"`);
+    if (own("rot")) at2.push(`transform="rotate(${F2(it.rot)} ${F2(it.x)} ${F2(it.y)})"`);
+    return `<text class="t${own("cls") ? " " + attr(it.cls) : ""}" ${at2.join(" ")}>${esc(it.str)}</text>`;
   }
   return "";
 }
@@ -4663,7 +4670,7 @@ function refreshAssembly(panel, app2) {
   for (const el of panel.querySelectorAll("[data-verdict]")) {
     const id = el.getAttribute("data-verdict");
     const M = model && model.assemblies.find((x) => x.asm.id === id);
-    const view = panel.querySelector(`[data-view="${id}"]`);
+    const view = panel.querySelector(`[data-view="${CSS.escape(id)}"]`);
     if (!M) {
       el.className = "verdict";
       el.textContent = model ? "" : "計算中…";
@@ -4686,7 +4693,7 @@ function refreshAssembly(panel, app2) {
     if (view) view.innerHTML = n >= 1 ? assemblySVG(model, M) : "";
     const inTree = new Set(M.solved.tree.map((e) => e.mate));
     M.solved.mates.forEach((mm, i) => {
-      const note = panel.querySelector(`[data-note="${id}:${i}"]`);
+      const note = panel.querySelector(`[data-note="${CSS.escape(`${id}:${i}`)}"]`);
       if (!note) return;
       if (mm.bad) {
         note.replaceChildren(h("div", { class: "verdict bad" }, "這條配合的配合點不存在了（工件的加工可能改過），請重新選。"));
@@ -5216,13 +5223,14 @@ function friendlyError(mod, err) {
 // ../js/ai/draft.js
 var rid2 = (p) => p + Math.random().toString(36).slice(2, 8);
 var clone = (o) => JSON.parse(JSON.stringify(o));
+var BAD_KEYS = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
 var tokens = (path) => String(path).match(/[^.[\]]+/g) || [];
 function setPath(obj2, path, value) {
   const ts = tokens(path);
-  if (!ts.length) return false;
+  if (!ts.length || ts.some((t) => BAD_KEYS.has(t))) return false;
   let o = obj2;
   for (const t of ts.slice(0, -1)) {
-    if (o == null || typeof o !== "object") return false;
+    if (o == null || typeof o !== "object" || !Object.hasOwn(o, t)) return false;
     o = o[t];
   }
   if (o == null || typeof o !== "object") return false;
@@ -5378,7 +5386,7 @@ function looksLikeKey(provider, key) {
 }
 
 // ../js/ai/ai-access.js
-var CSS = `
+var CSS2 = `
 .aia{border:1px solid #d9dde3;border-radius:10px;padding:12px 14px;font-size:14px;line-height:1.5;background:#fff;color:#1d2330}
 .aia [hidden]{display:none!important}
 .aia .aia-opt{display:flex;gap:8px;align-items:flex-start;justify-content:flex-start;margin:4px 0;cursor:pointer;font-weight:600;text-align:left}
@@ -5399,7 +5407,7 @@ function createAiAccess({ mount, gatewayUrl, tools = [], providers = [], guideUr
   if (!document.getElementById("aia-style")) {
     const st = document.createElement("style");
     st.id = "aia-style";
-    st.textContent = CSS;
+    st.textContent = CSS2;
     document.head.appendChild(st);
   }
   const gw = gatewayUrl ? createGateway({ url: gatewayUrl, tool: tools.length === 1 ? tools[0] : void 0 }) : null;
@@ -6201,6 +6209,7 @@ async function start() {
   bindTopbar();
   rerender();
   if (restored) showRestoredNotice();
+  if (embeddedElsewhere()) showEmbedNotice();
   setStatus("載入幾何核心…", "busy");
   try {
     const { default: Module } = await import(MANIFOLD_URL);
@@ -6253,6 +6262,21 @@ function dismissRestored() {
     restoredBar.remove();
     restoredBar = null;
   }
+}
+function showEmbedNotice() {
+  const go = (text2) => h("a", { class: "go", href: location.href, target: "_blank", rel: "noopener" }, text2);
+  document.querySelector(".editor").prepend(h(
+    "div",
+    { class: "notice embed", role: "note" },
+    h(
+      "span",
+      {},
+      h("b", {}, "請在新分頁開啟。"),
+      "工具現在被放在別的網頁（例如協作平台）的框裡：這裡無法匯出 PDF、畫面也比較窄，自動存檔也和新分頁分開。"
+    ),
+    go("在新分頁開啟工具")
+  ));
+  document.querySelector(".topbar .actions").prepend(go("↗ 在新分頁開啟"));
 }
 async function newProjectAsk() {
   if (!await ask("開新專案（4 個空白工件）？目前的內容會被取代，需要的話請先「存成 JSON」。", { ok: "開新專案" })) return;
