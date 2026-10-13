@@ -237,6 +237,8 @@ a.go:hover { filter: brightness(1.08); }
   <div class="brand">組合單元工作室</div>
   <div class="proj" id="projName"></div>
   <div class="actions">
+    <button type="button" id="btnUndo" title="復原上一步（⌘Z／Ctrl+Z）" disabled>↶ 復原</button>
+    <button type="button" id="btnRedo" title="重做（⇧⌘Z／Ctrl+Y）" disabled>↷ 重做</button>
     <button type="button" id="btnNew">新專案</button>
     <button type="button" id="btnExample">老師範例</button>
     <label class="btn" title="匯入先前存的專案檔（.json）">匯入<input type="file" id="fileImport" accept=".json,application/json" hidden></label>
@@ -979,7 +981,7 @@ function solveAssembly(project, assembly) {
       progress = true;
     }
   }
-  if (!assembly.role || assembly.role === "primary") {
+  if ((!assembly.role || assembly.role === "primary") && (assembly.mates || []).length) {
     for (const p of parts) if (!placed.has(p.id)) issues.push({ level: "warn", msg: `${p.name} 沒有組進來（缺少配合）` });
   }
   return { base, placed, tree, mates, ports, issues };
@@ -1194,6 +1196,16 @@ function migrate(p) {
   if (p.version > SCHEMA_VERSION) throw new Error(`專案檔版本 ${p.version} 比工具新，請更新工具`);
   p.settings = { ...newProject().settings, ...p.settings || {} };
   p.assemblies = p.assemblies || [];
+  p.meta = { ...newProject().meta, ...p.meta && typeof p.meta === "object" ? p.meta : {} };
+  if (!p.meta.student || typeof p.meta.student !== "object") p.meta.student = { name: "", id: "" };
+  for (const a of Array.isArray(p.assemblies) ? p.assemblies : []) if (a && typeof a === "object" && !Array.isArray(a.mates)) a.mates = [];
+  for (const part of Array.isArray(p.parts) ? p.parts : []) for (const st of part && part.steps || []) for (const f of st && st.features || []) {
+    if (!f || typeof f !== "object") continue;
+    if (f.type === "hole" && !f.at) f.at = { mode: "center", u: 0, v: 0 };
+    if (f.type === "boss") {
+      for (const is of f.islands || []) if (is && typeof is === "object" && !is.at) is.at = { mode: "center", u: 0, v: 0 };
+    }
+  }
   const toNum = (o) => {
     if (o && typeof o === "object") {
       for (const k of ["w", "h", "d"]) if (k in o) o[k] = Number(o[k]);
@@ -3444,6 +3456,12 @@ function download(name, data, type) {
 
 // ../js/ui/dialog.js
 var current = null;
+var lastY = null;
+var lastAt = 0;
+if (typeof document !== "undefined") document.addEventListener("pointerdown", (e) => {
+  lastY = e.clientY;
+  lastAt = performance.now();
+}, true);
 function show(message, buttons, extra) {
   if (current) current(void 0);
   return new Promise((resolve) => {
@@ -3476,6 +3494,11 @@ function show(message, buttons, extra) {
       if (e.target === overlay) close(cancelValue);
     });
     document.body.append(overlay);
+    if (embeddedElsewhere() && lastY != null && performance.now() - lastAt < 1500) {
+      overlay.style.alignItems = "flex-start";
+      const bh = box2.offsetHeight || 160;
+      box2.style.marginTop = Math.max(0, Math.min(lastY - bh + 24, innerHeight - bh - 32)) + "px";
+    }
     document.addEventListener("keydown", onKey, true);
     (btns[btns.length - 1] || box2).focus();
     current = close;
@@ -3905,14 +3928,15 @@ function pocketFields(f, set, part) {
       }, true), { class: "small" }),
       button(`角落 ${a}×${a}`, set(() => {
         f.rects = [{ u0: 0, u1: a, v0: 0, v1: a }];
-      }, true), { class: "small ghost", title: "左下角一塊；配合鏡射做出四角" }),
+      }, true), { class: "small ghost", title: "左下角一塊；配合鏡射做出四角（會取代上面的矩形，按錯可按「復原」）" }),
       button("置中通槽", set(() => {
         f.rects = [{ u0: F.U / 2 - a, u1: F.U / 2 + a, v0: 0, v1: F.V }];
-      }, true), { class: "small ghost" }),
+      }, true), { class: "small ghost", title: "會取代上面的矩形，按錯可按「復原」" }),
       button("十字槽", set(() => {
         f.rects = [{ u0: F.U / 2 - a, u1: F.U / 2 + a, v0: 0, v1: F.V }, { u0: 0, u1: F.U, v0: F.V / 2 - a, v1: F.V / 2 + a }];
-      }, true), { class: "small ghost" })
+      }, true), { class: "small ghost", title: "會取代上面的矩形，按錯可按「復原」" })
     ),
+    h("p", { class: "hint" }, "「角落」「置中通槽」「十字槽」會取代上面的矩形；按錯可以按上方的「↶ 復原」。"),
     mirrorRow(f, set)
   ];
 }
@@ -4443,6 +4467,7 @@ function polyName(model, parts, r) {
 // ../js/ui/assembly.js
 var rid = (p) => p + Math.random().toString(36).slice(2, 8);
 var mateKey = (m) => [m.a, m.aPort, m.b, m.bPort, m.rot || 0].join("|");
+var asmSig = (base, mates) => base + "#" + (mates || []).map(mateKey).sort().join(",");
 var partsSig = (P) => JSON.stringify(P.parts.map((p) => [p.id, p.stock, p.steps]));
 function renderAssembly(panel, app2) {
   const P = app2.project;
@@ -4488,7 +4513,6 @@ var kindsOf = (app2) => ({ ...DEFAULT_KINDS, ...app2.ui.comboKinds || {} });
 var enumOptsOf = (app2) => ({ flatOnly: false, mirrorSame: false, ...app2.ui.enumOpts || {} });
 function autoCard(panel, app2) {
   const S = app2.autoCombo || (app2.autoCombo = { results: null, sig: "", note: "", full: null, fullSig: "" });
-  if (!S.added) S.added = /* @__PURE__ */ new Set();
   const kinds = kindsOf(app2), eo = enumOptsOf(app2);
   const P = app2.project, ready = !!app2.model && P.parts.length >= 2;
   const stale = S.results && S.sig !== partsSig(P);
@@ -4568,11 +4592,13 @@ function fullView(app2, S, stale) {
   if (!S.full) return null;
   const P = app2.project, list = S.full.list;
   const label = (r, i) => (r.name || `組合 ${i + 1}`) + (r.flat ? "" : "（立體）");
+  const have = new Set(P.assemblies.map((a) => asmSig(a.base, a.mates)));
+  const isAdded = (r) => have.has(asmSig(r.base, r.mates)) || !!(S.geo && S.geo.has(r.key));
   const add3 = (r, i) => {
     P.assemblies.push({ id: rid("a"), role: "combo", name: r.name || `組合 ${i + 1}`, group: "", base: r.base, mates: r.mates.map((m) => ({ ...m })) });
-    S.added.add(r.key);
+    have.add(asmSig(r.base, r.mates));
   };
-  const left = list.filter((r) => !S.added.has(r.key)).length;
+  const left = list.filter((r) => !isAdded(r)).length;
   return h(
     "div",
     { class: "combo-group" },
@@ -4587,13 +4613,13 @@ function fullView(app2, S, stale) {
       { class: "add-row", style: { marginTop: 0, marginBottom: "6px" } },
       button(left ? `全部加入 ③（${left} 種）` : "全部都已加入", () => {
         list.forEach((r, i) => {
-          if (!S.added.has(r.key)) add3(r, i);
+          if (!isAdded(r)) add3(r, i);
         });
         app2.changed(true);
       }, { class: "small", disabled: !left || stale })
     ) : h("div", { class: "verdict warn" }, "找不到能把全部工件組在一起的方式。可以試著多勾幾種組法（例如「外表面疊在一起」）。"),
     h("div", { class: "combo-grid" }, list.map((r, i) => {
-      const added = S.added.has(r.key);
+      const added = isAdded(r);
       return h(
         "div",
         { class: "combo-tile" + (added ? " added" : "") },
@@ -4628,8 +4654,8 @@ function runEnum(panel, app2, render = true) {
     const r = enumerateAssemblies(model, { kinds: kindsOf(app2), flatOnly: eo.flatOnly, mirrorSame: eo.mirrorSame, max: 60, timeLimit: 8e3 });
     S.full = { ms: r.ms, truncated: r.truncated, list: r.list.map((x) => ({ key: x.key, base: x.base, mates: x.mates, name: x.name, flat: x.flat, dims: x.dims, svg: placedSVG(model, x.placed) })) };
     S.fullSig = partsSig(model.project);
-    S.added = /* @__PURE__ */ new Set();
-    for (const M of model.assemblies) if (M.solved.placed.size === model.parts.length) S.added.add(assemblyKey(model, M.solved.placed, eo.mirrorSame));
+    S.geo = /* @__PURE__ */ new Set();
+    for (const M of model.assemblies) if (M.solved.placed.size === model.parts.length) S.geo.add(assemblyKey(model, M.solved.placed, eo.mirrorSame));
   } catch (err) {
     console.error(err);
     S.full = null;
@@ -4662,6 +4688,11 @@ async function runAuto(app2) {
   const P = app2.project, S = app2.autoCombo;
   const primary = P.assemblies.find((a) => a.role === "primary");
   if (primary && (primary.mates || []).length && !await ask("用自動組出來的結果取代目前的主要組合？", { ok: "取代" })) return;
+  if (!app2.model || partsSig(app2.model.project) !== partsSig(P)) {
+    S.note = "還在計算，請等左下角顯示「已更新」後再按一次。";
+    app2.rerender();
+    return;
+  }
   let r;
   const kinds = kindsOf(app2);
   try {
@@ -4751,7 +4782,13 @@ function asmEditor(app2, A, portsOf, isPrimary) {
         A.mates.push(defaultMate(b.id, A.base, portsOf));
         app2.changed(true);
       }, { class: "small", disabled: !missing.length, title: missing.length ? null : "所有工件都已經組進來了；要另一種組法請新增組合" }),
-      missing.length ? null : h("span", { class: "faint" }, "所有工件都已經組進來了")
+      missing.length ? null : h("span", { class: "faint" }, "所有工件都已經組進來了"),
+      isPrimary && A.mates.length ? h("span", { class: "spacer" }) : null,
+      isPrimary && A.mates.length ? button("清空主要組合", async () => {
+        if (!await ask("清空主要組合？所有「怎麼裝上去」都會拿掉，只留下基準工件。按錯可以按上方的「復原」。", { ok: "清空", danger: true })) return;
+        A.mates = [];
+        app2.changed(true);
+      }, { class: "small ghost", title: "拿掉主要組合的全部配合" }) : null
     ),
     h("div", { class: "verdict", "data-verdict": A.id }),
     h("div", { class: "asm-view", "data-view": A.id })
@@ -4853,6 +4890,13 @@ function refreshAssembly(panel, app2) {
     if (!M) {
       el.className = "verdict";
       el.textContent = model ? "" : "計算中…";
+      if (view) view.replaceChildren();
+      continue;
+    }
+    const raw = P.assemblies.find((a) => a.id === id);
+    if (raw && !(raw.mates || []).length) {
+      el.className = "verdict";
+      el.textContent = "還沒有配合：按「＋ 再裝一個工件」，或用上面的「自動找組合」。";
       if (view) view.replaceChildren();
       continue;
     }
@@ -6391,6 +6435,7 @@ async function start() {
   app.project = project;
   bindTopbar();
   rerender();
+  histReset();
   if (restored) showRestoredNotice();
   if (embeddedElsewhere()) showEmbedNotice();
   setStatus("載入幾何核心…", "busy");
@@ -6487,9 +6532,99 @@ app.findV1Project = (k) => {
 function changed(structural = false) {
   if (structural) rerender();
   updateTitle();
+  histNote(structural);
   scheduleSave();
   scheduleRecompute();
 }
+var HIST_MAX = 100;
+var hist = { past: [], future: [], cur: null, timer: null };
+var composing = false;
+document.addEventListener("compositionstart", () => {
+  composing = true;
+}, true);
+document.addEventListener("compositionend", () => {
+  composing = false;
+  if (hist.timer) histNote(false);
+}, true);
+var histFlush = () => {
+  if (hist.timer && !composing) histCommit();
+};
+document.addEventListener("pointerdown", histFlush, true);
+document.addEventListener("focusout", histFlush, true);
+function histSync() {
+  if (!hist.timer) hist.cur = JSON.stringify(app.project);
+}
+function histReset() {
+  clearTimeout(hist.timer);
+  hist.timer = null;
+  hist.past = [];
+  hist.future = [];
+  hist.cur = JSON.stringify(app.project);
+  updateUndoButtons();
+}
+function histCommit(force = false) {
+  if (!force && composing) {
+    clearTimeout(hist.timer);
+    hist.timer = setTimeout(histCommit, 600);
+    return;
+  }
+  clearTimeout(hist.timer);
+  hist.timer = null;
+  const now = JSON.stringify(app.project);
+  if (now === hist.cur) {
+    updateUndoButtons();
+    return;
+  }
+  hist.past.push(hist.cur);
+  if (hist.past.length > HIST_MAX) hist.past.shift();
+  hist.cur = now;
+  hist.future = [];
+  updateUndoButtons();
+}
+function histNote(structural) {
+  if (structural) {
+    histCommit(true);
+    return;
+  }
+  clearTimeout(hist.timer);
+  hist.timer = setTimeout(histCommit, 600);
+  updateUndoButtons(true);
+}
+function undo() {
+  histCommit(true);
+  if (!hist.past.length) return;
+  hist.future.push(hist.cur);
+  hist.cur = hist.past.pop();
+  restoreSnapshot();
+}
+function redo() {
+  histCommit(true);
+  if (!hist.future.length) return;
+  hist.past.push(hist.cur);
+  hist.cur = hist.future.pop();
+  restoreSnapshot();
+}
+function restoreSnapshot() {
+  dismissRestored();
+  app.project = JSON.parse(hist.cur);
+  app.ui.part = Math.max(0, Math.min(app.ui.part || 0, app.project.parts.length - 1));
+  if (app.autoCombo) {
+    app.autoCombo.geo = null;
+    app.autoCombo.note = "";
+  }
+  rerender();
+  histSync();
+  scheduleSave();
+  scheduleRecompute();
+  updateUndoButtons();
+}
+function updateUndoButtons(pending = false) {
+  const u = $("btnUndo"), r = $("btnRedo");
+  if (u) u.disabled = !(pending || hist.timer || hist.past.length);
+  if (r) r.disabled = !hist.future.length || pending;
+}
+app.undo = undo;
+app.redo = redo;
 function rerender() {
   const panel = $("panel");
   for (const b of document.querySelectorAll(".tabs [data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === app.ui.tab));
@@ -6615,7 +6750,21 @@ function bindTopbar() {
   for (const b of document.querySelectorAll(".tabs [data-tab]")) b.addEventListener("click", () => {
     app.ui.tab = b.dataset.tab;
     rerender();
+    histSync();
     refreshPanel();
+  });
+  $("btnUndo").addEventListener("click", undo);
+  $("btnRedo").addEventListener("click", redo);
+  document.addEventListener("keydown", (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k !== "z" && k !== "y") return;
+    const t = e.target;
+    if (t && (t.isContentEditable || t.tagName === "TEXTAREA" || t.tagName === "INPUT" && !["checkbox", "radio", "button", "file"].includes(t.type))) return;
+    if (document.querySelector(".dlg-overlay")) return;
+    e.preventDefault();
+    if (k === "y" || e.shiftKey) redo();
+    else undo();
   });
   $("btnNew").addEventListener("click", () => newProjectAsk());
   $("btnExample").addEventListener("click", async () => {
